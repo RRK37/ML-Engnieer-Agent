@@ -3,7 +3,7 @@
 </p>
 
 <h1 align="center">
-  MLE-Dojo: Interactive Environments for Empowering LLM Agents in Machine Learning Engineering
+  MLE-Dojo + GEPA: Adaptive ML Engineering Agents that Learn from Experience
 </h1>
 
 <p align="center" style="font-family:'Segoe UI', Roboto, sans-serif; font-weight:bold; text-transform:uppercase;">
@@ -24,10 +24,99 @@
   </a>
 </p>
 
+---
 
+## Why ML Engineering Agents?
 
-**MLE-Dojo** is a Gym-style framework for systematically reinforcement learning, evaluating, and improving autonomous large language model (LLM) agents in iterative machine learning engineering (MLE) workflows. 
-Built upon 200+ real-world Kaggle challenges. **MLE-Dojo** covers diverse, open-ended MLE tasks carefully curated to reflect realistic Machine Learning Engineering scenarios such as data processing, architecture search, hyperparameter tuning, and code debugging, etc.
+Machine learning engineering is one of the most iterative and trial-heavy disciplines in software. A typical ML workflow involves loading data, selecting models, tuning hyperparameters, debugging training runs, engineering features, and validating results -- often repeating the cycle dozens of times before reaching a competitive solution. This is exactly the kind of work that benefits from autonomous agents: the search space is vast, the feedback loop is well-defined (a metric score), and each iteration follows recognizable patterns.
+
+Yet existing LLM agents approach each problem from scratch. They have no memory of what worked on similar tasks, no way to detect when they are stuck repeating the same failing strategy, and no mechanism to build up domain knowledge over time. On a 10-step Kaggle challenge, a naive agent might spend 7 steps rediscovering that Random Forest without cross-validation underperforms -- something a human practitioner would know to avoid after the first attempt.
+
+**This project addresses that gap.** Built on [MLE-Dojo](https://github.com/MLE-Dojo/MLE-Dojo) -- a Gym-style framework for training and evaluating ML engineering agents on 200+ real Kaggle challenges -- it implements systems that allow agents to learn from their own execution history, build transferable knowledge, and adapt their strategies in real time.
+
+---
+
+## Key Implementations
+
+The project implements three major systems on top of the MLE-Dojo framework:
+
+### 1. Pattern Analysis System
+
+Located in [`mledojo/agent/aide/pattern_analysis.py`](mledojo/agent/aide/pattern_analysis.py). See also [`PATTERN_ANALYSIS.md`](PATTERN_ANALYSIS.md) for the full design document.
+
+After every few solution attempts, this system automatically analyzes what the agent has tried so far:
+
+- **Feature Extraction** -- Detects which models (XGBoost, LightGBM, neural networks, etc.), preprocessing techniques (scaling, encoding, imputation), validation strategies (cross-validation, stratification), and hyperparameter methods (grid search, Optuna, Bayesian) each solution used.
+- **Pattern Discovery** -- Clusters similar solutions using K-means to identify distinct strategy families (e.g., "tree-based models with grid search" vs. "neural networks with feature engineering").
+- **Correlation Analysis** -- Classifies patterns as high-performing, low-performing, risky (high variance), or stable (consistent results), backed by statistical evidence.
+- **Insight Generation** -- Converts analysis into actionable guidance injected directly into the agent's prompts: *"Avoid random_forest without proper validation -- scores 52% lower than best approaches"* or *"Continue using XGBoost with cross-validation and feature engineering."*
+- **Stagnation Detection** -- A temporal analyzer monitors whether scores have plateaued or solution diversity has dropped, and triggers the agent to explore fundamentally different approaches.
+
+Analysis runs every 3 steps and the resulting insights are automatically added to both drafting and improvement prompts.
+
+### 2. Idea Extraction and Knowledge Base
+
+Located in [`mledojo/agent/aide/idea_extraction.py`](mledojo/agent/aide/idea_extraction.py). See [`example_idea_extraction.py`](example_idea_extraction.py) for a demo.
+
+While Pattern Analysis operates on raw code features, the Idea Extraction system works at a higher level of abstraction:
+
+- **AST-based Code Analysis** -- Parses solution code to extract structural patterns: pipeline architectures, ensemble methods, feature engineering approaches, validation schemes, and optimization strategies.
+- **Natural Language Extraction** -- Pulls conceptual ideas from the agent's planning text (e.g., "use stacking with diverse base learners").
+- **Knowledge Base** -- Stores abstract ML concepts as structured objects with metadata: confidence scores, success rates, temporal context, prerequisites, and relationships between ideas.
+- **Topic Modeling** -- Uses LDA/NMF to discover recurring themes across solutions.
+- **Semantic Search** -- Optionally uses sentence-transformers to retrieve relevant ideas by meaning rather than keyword match.
+
+The knowledge base tracks which ideas have been tried, how well they performed, and which ideas tend to work well together -- enabling the agent to make more informed decisions about what to try next.
+
+### 3. Enhanced AIDE Agent Variants
+
+Three variants of the AIDE agent that integrate the above systems:
+
+| Variant | File | Focus |
+|---------|------|-------|
+| **Main** | [`agent.py`](mledojo/agent/aide/agent.py) | Pattern analysis integration with the standard AIDE draft/improve loop |
+| **RK-1** | [`agent_rk_1.py`](mledojo/agent/aide/agent_rk_1.py) | Experimental variant with alternative solution selection |
+| **RK-2** | [`agent_rk_2.py`](mledojo/agent/aide/agent_rk_2.py) | Most feature-rich variant with full idea extraction and pattern analysis |
+
+All three build on the AIDE (AI-Driven Exploration) scaffold, which generates initial solution drafts and iteratively refines them based on execution feedback. The enhanced loop injects learned patterns and accumulated knowledge into each iteration's prompts.
+
+### 4. Execution Infrastructure
+
+- **[`run.py`](run.py)** -- Docker task manager that orchestrates experiments across multiple GPUs. Dynamically assigns tasks to available GPU slots, enforces runtime limits, streams container logs, and handles graceful shutdown with full cleanup.
+- **[`main.py`](main.py)** -- Unified entry point supporting all agent types (MLE, AIDE, OpenAI, Dummy) with CSV tracking of scores and prompts at each iteration, configurable timeouts, and signal-based termination handling.
+- **[`Dockerfile`](Dockerfile)** -- NVIDIA CUDA-based image with Python 3.11 and all dependencies pre-installed.
+- **[`run_local.sh`](run_local.sh)** / **[`run_api.sh`](run_api.sh)** -- Scripts for local model serving via vLLM and external API configuration.
+
+### Architecture Overview
+
+```
+MLE-Dojo Framework (200+ Kaggle challenges)
+├── KaggleEnvironment (Gym-compatible)
+│   ├── Interface (Info / Validation / Execution)
+│   ├── Sandbox (isolated code execution)
+│   └── FeedbackManager
+│
+└── Agent Scaffolds
+    ├── MLE Agent ─────────── original action-space agent
+    ├── AIDE Agent ─────────── draft → improve → debug loop
+    │   ├── + Pattern Analysis ──→ learns what works / what doesn't
+    │   ├── + Idea Extraction ───→ builds knowledge base of ML concepts
+    │   └── + Stagnation Detection → escapes local optima
+    ├── OpenAI Agents ─────── openai-agents package integration
+    └── Dummy Agent ────────── baseline
+
+Execution Layer
+├── run.py ────── multi-GPU Docker orchestration
+├── main.py ───── unified entry point with CSV logging
+└── Dockerfile ── CUDA-ready container image
+```
+
+---
+
+## About the Base Framework
+
+**MLE-Dojo** is a Gym-style framework for systematically reinforcement learning, evaluating, and improving autonomous large language model (LLM) agents in iterative machine learning engineering (MLE) workflows.
+Built upon 200+ real-world Kaggle challenges, **MLE-Dojo** covers diverse, open-ended MLE tasks carefully curated to reflect realistic Machine Learning Engineering scenarios such as data processing, architecture search, hyperparameter tuning, and code debugging.
 **MLE-Dojo**'s fully executable environment and flexible interface support comprehensive agent training via both supervised fine-tuning and reinforcement learning, facilitating iterative experimentation, realistic data sampling, and real-time outcome verification.
 
 <p align="center">
